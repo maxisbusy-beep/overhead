@@ -60,6 +60,11 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--pick);outline-o
 .tabs{display:grid;grid-template-columns:repeat(3,1fr);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;gap:4px}
 .tab{padding:10px 0;border-radius:8px;font:600 15px/1 var(--f-display);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .tab[aria-selected="true"]{background:var(--line);color:var(--ink)}
+.zoom{position:fixed;z-index:3;right:max(12px,env(safe-area-inset-right,0px));top:50%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;gap:6px;background:rgba(20,26,41,.85);border:1px solid var(--line);border-radius:999px;padding:6px}
+.zoom button{width:44px;height:44px;border-radius:50%;font:600 22px/1 var(--f-display);color:var(--ink)}
+.zoom button:active{background:var(--line)}
+.zoom #zoomVal{width:44px;height:auto;padding:4px 0;font:500 13px/1 var(--f-data);border-radius:6px}
+#cam{transform-origin:50% 50%}
 .ctrl{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
 .ctrl .btn{background:rgba(20,26,41,.88)}
 
@@ -142,6 +147,12 @@ input[type=range]{flex:1;min-width:140px;accent-color:var(--pick)}
   <button class="chip" data-g="gps-ops" aria-pressed="false">GPS</button>
   <button class="chip" data-g="weather" aria-pressed="false">Weather</button>
 </nav>
+
+<div class="zoom" id="zoomPill" hidden>
+  <button id="zoomIn" aria-label="Zoom in">+</button>
+  <button id="zoomVal" aria-label="Reset zoom">1×</button>
+  <button id="zoomOut" aria-label="Zoom out">−</button>
+</div>
 
 <div id="aim" hidden><div id="aimMain"></div><div id="aimDiag"></div></div>
 
@@ -539,7 +550,7 @@ const S={
   group:'visual', sats:[], view:[], selected:null, selObj:null, track:[],
   mode:'sky', R:null, offset:null, nudge:0, fov:66, red:false,
   layers:{stars:true,cons:true,planets:true,sats:true},
-  boost:2, night:true, camOn:false, camInfo:'', sensor:'none',
+  boost:2, night:true, zoom:1, hwZoom:null, camOn:false, camInfo:'', sensor:'none',
   sunEl:0, sunHat:[1,0,0], dataAge:null, absolute:false, align:null
 };
 const saved=store.get('ovh:settings');
@@ -789,6 +800,7 @@ async function startCamera(){
   try{await v.play()}catch(e){}
   camTrack=st.getVideoTracks()[0];S.camOn=true;
   await applyNight();
+  initHwZoom();
   try{wake=await navigator.wakeLock?.request('screen')}catch(e){}
 }
 async function applyNight(){
@@ -843,17 +855,56 @@ async function camFail(name,msg,framed){
   $('camErrMsg').textContent=(fixes[name]||'Unexpected camera error.')+'  [code: '+name+(perm?', permission: '+perm:'')+(msg?', '+msg:'')+']';
   $('camErr').hidden=false;
 }
-function stopCamera(){const v=$('cam');if(v.srcObject){v.srcObject.getTracks().forEach(t=>t.stop());v.srcObject=null}v.hidden=true;S.camOn=false;camTrack=null;try{wake?.release()}catch(e){}wake=null}
+function stopCamera(){const v=$('cam');if(v.srcObject){v.srcObject.getTracks().forEach(t=>t.stop());v.srcObject=null}v.hidden=true;v.style.transform='';S.camOn=false;camTrack=null;S.hwZoom=null;try{wake?.release()}catch(e){}wake=null}
+
+/* ---------- zoom ---------- */
+const cv=$('cv'),cx=cv.getContext('2d');
+let zoomBusy=false,zoomPending=null;
+function maxZoom(){return S.hwZoom?Math.min(S.hwZoom.max,10):8}
+function setZoom(z){
+  z=Math.max(1,Math.min(maxZoom(),z));S.zoom=z;
+  $('zoomVal').textContent=(z<9.95?z.toFixed(1):Math.round(z))+'×';
+  const v=$('cam');
+  if(S.hwZoom&&camTrack){
+    v.style.transform='';
+    zoomPending=Math.max(S.hwZoom.min,Math.min(S.hwZoom.max,z*S.hwZoom.min));
+    if(!zoomBusy)pushHwZoom();
+  }else v.style.transform=z>1?'scale('+z+')':'';
+}
+async function pushHwZoom(){
+  zoomBusy=true;
+  while(zoomPending!=null){const target=zoomPending;zoomPending=null;
+    try{await camTrack.applyConstraints({advanced:[{zoom:target}]})}
+    catch(e){S.hwZoom=null;setZoom(S.zoom);break}}
+  zoomBusy=false;
+}
+function initHwZoom(){
+  S.hwZoom=null;
+  try{const c=camTrack&&camTrack.getCapabilities?camTrack.getCapabilities():{};
+    if(c.zoom&&c.zoom.max>c.zoom.min&&c.zoom.min>0)S.hwZoom={min:c.zoom.min,max:c.zoom.max/c.zoom.min}}catch(e){}
+  setZoom(S.zoom);
+}
+$('zoomIn').addEventListener('click',()=>setZoom(S.zoom*1.5));
+$('zoomOut').addEventListener('click',()=>setZoom(S.zoom/1.5));
+$('zoomVal').addEventListener('click',()=>setZoom(1));
+const pts=new Map();let pinch=null,pinched=false;
+cv.addEventListener('pointerdown',e=>{pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pts.size===2&&S.mode==='ar'){const [a,b]=[...pts.values()];pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1,z:S.zoom};pinched=true}});
+cv.addEventListener('pointermove',e=>{if(!pts.has(e.pointerId))return;pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pinch&&pts.size===2){const [a,b]=[...pts.values()];setZoom(pinch.z*Math.hypot(a.x-b.x,a.y-b.y)/pinch.d)}});
+const endPt=e=>{pts.delete(e.pointerId);if(pts.size<2)pinch=null;if(pts.size===0)setTimeout(()=>pinched=false,50)};
+cv.addEventListener('pointerup',endPt);cv.addEventListener('pointercancel',endPt);
+cv.addEventListener('wheel',e=>{if(S.mode!=='ar')return;e.preventDefault();setZoom(S.zoom*(e.deltaY<0?1.15:1/1.15))},{passive:false});
 
 /* ---------- drawing ---------- */
-const cv=$('cv'),cx=cv.getContext('2d');let W=0,H=0,DPR=1;
+let W=0,H=0,DPR=1;
 function resize(){DPR=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;cx.setTransform(DPR,0,0,DPR,0,0)}
 addEventListener('resize',resize);
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 let C=null;function colors(){if(!C)C={ground:css('--ground'),line:css('--line'),ink:css('--ink'),muted:css('--muted'),sunlit:css('--sunlit'),shadow:css('--shadow'),pick:css('--pick'),fd:css('--f-display'),fm:css('--f-data')};return C}
 function screenAngle(){return((screen.orientation&&screen.orientation.angle)||window.orientation||0)*D2R}
 function makeProj(){
-  const R=S.R,th=screenAngle(),c=Math.cos(th),s=Math.sin(th),f=(H/2)/Math.tan(S.fov/2*D2R);
+  const R=S.R,th=screenAngle(),c=Math.cos(th),s=Math.sin(th),f=(H/2)/Math.tan(S.fov/2*D2R)*S.zoom;
   return(e,n,u)=>{
     const dx=R[0]*e+R[3]*n+R[6]*u,dy=R[1]*e+R[4]*n+R[7]*u,dz=R[2]*e+R[5]*n+R[8]*u;
     const sx=dx*c-dy*s,sy=dx*s+dy*c,depth=-dz;
@@ -874,7 +925,7 @@ function drawSatAt(x,y,l,label){
   if(label||sel){cx.font=(sel?'600 15px ':'500 13px ')+c.fd;cx.fillStyle=sel?c.pick:(l.lit?c.ink:c.muted);cx.fillText(l.sat.name,x+9,y-8)}
   hits.push({x,y,sat:l.sat,pri:1});
 }
-function starR(m,scale){return Math.max(0.7,Math.min(4.6,(3.3-0.55*m)*scale))}
+function starR(m,scale){return Math.max(0.7*Math.min(scale,1.6),Math.min(4.6*Math.max(1,scale*0.8),(3.3-0.55*m)*scale))}
 function drawStarAt(x,y,s,scale,label){
   cx.beginPath();cx.arc(x,y,starR(s.mag,scale),0,7);cx.fillStyle=starColor(s.bv);cx.fill();
   if(s===S.selObj){const c=colors();cx.beginPath();cx.arc(x,y,12,0,7);cx.strokeStyle=c.pick;cx.lineWidth=2;cx.stroke()}
@@ -895,7 +946,7 @@ function drawLines(P,alpha){
   cx.stroke();cx.globalAlpha=1;
 }
 function nearestToCenter(proj){
-  let best=null,bd=Math.cos(4*D2R);
+  let best=null,bd=Math.cos(Math.max(1,4/S.zoom)*D2R);
   const test=(o,name)=>{const p=proj(o.e,o.n,o.u);if(p.depth>bd){bd=p.depth;best=name}};
   if(S.layers.planets)for(const p of PLANETS)if(p.el>-1)test(p,p.name);
   if(S.layers.sats)for(const l of S.view)if(l.el>0)test(l,l.sat.name);
@@ -927,9 +978,9 @@ function drawAR(){
     cx.globalAlpha=1;
   }
   if(S.layers.stars){
-    const near=Math.cos(14*D2R);
+    const z=S.zoom,near=Math.cos(Math.max(4,14/z)*D2R),sc=1+0.45*Math.log2(z),lim=3.6+Math.log2(z);
     for(const s of STARS){if(s.el<-1)continue;const p=proj(s.e,s.n,s.u);if(!on(p))continue;
-      drawStarAt(p.x,p.y,s,1,(s.name&&s.mag<1.6)||(p.depth>near&&s.mag<3.6&&(s.name||s.desig)))}
+      drawStarAt(p.x,p.y,s,sc,(s.name&&s.mag<(z>=2?3:1.6))||(p.depth>near&&s.mag<lim&&(s.name||s.desig)))}
   }
   if(S.layers.planets)for(const pl of PLANETS){if(pl.el<-1)continue;const p=proj(pl.e,pl.n,pl.u);if(on(p))drawPlanetAt(p.x,p.y,pl)}
   if(S.layers.sats){
@@ -955,7 +1006,7 @@ function drawAR(){
   if(nm)$('aimMain').querySelector('b').textContent=nm;
   $('aimDiag').textContent=diag();
 }
-function diag(){return (S.camOn?'Camera '+S.camInfo:'Camera off')+' · '+S.sensor+(S.nudge?' · corr '+(S.nudge>0?'+':'')+Math.round(S.nudge)+'°':'')}
+function diag(){return (S.camOn?'Camera '+S.camInfo:'Camera off')+(S.zoom>1.01?' · zoom '+S.zoom.toFixed(1)+'×'+(S.hwZoom?' (lens)':' (screen)'):'')+' · '+S.sensor+(S.nudge?' · corr '+(S.nudge>0?'+':'')+Math.round(S.nudge)+'°':'')}
 function drawSky(){
   const c=colors();cx.clearRect(0,0,W,H);cx.fillStyle=c.ground;cx.fillRect(0,0,W,H);
   const top=118,bot=(!$('info').hidden?250:140),cxp=W/2,cyp=top+(H-top-bot)/2,r=Math.max(60,Math.min(W/2-28,(H-top-bot)/2-18));
@@ -994,7 +1045,7 @@ function frame(t){
   requestAnimationFrame(frame);
 }
 cv.addEventListener('click',e=>{
-  if(S.mode==='passes')return;
+  if(S.mode==='passes'||pinched)return;
   let best=null,bd=28*28;
   for(const h of hits){const d=(h.x-e.clientX)**2+(h.y-e.clientY)**2-(h.pri===0?150:h.pri===1?80:0);if(d<bd){bd=d;best=h}}
   if(!best)return;
@@ -1103,6 +1154,7 @@ async function setMode(m){
   $('passes').hidden=m!=='passes';
   $('alignBtn').hidden=$('boostBtn').hidden=m!=='ar';
   $('ctrl').hidden=m==='passes';
+  $('zoomPill').hidden=m!=='ar';
   if(m!=='ar'){stopCamera();$('camErr').hidden=true;S.align=null;$('alignBar').hidden=true}
   if(m==='passes')computePasses();
   if(m==='ar'){await startSensors();await startCamera()}
