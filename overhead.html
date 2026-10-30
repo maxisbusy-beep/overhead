@@ -203,6 +203,7 @@ input[type=range]{flex:1;min-width:140px;accent-color:var(--pick)}
     </div>
   </section>
   <div class="ctrl" id="ctrl">
+    <button class="btn" id="followBtn">Follow compass</button>
     <button class="btn" id="findBtn">Find</button>
     <button class="btn" id="alignBtn">Align</button>
     <button class="btn" id="boostBtn">Brighten ×2</button>
@@ -550,12 +551,12 @@ const S={
   group:'visual', sats:[], view:[], selected:null, selObj:null, track:[],
   mode:'sky', R:null, offset:null, nudge:0, fov:66, red:false,
   layers:{stars:true,cons:true,planets:true,sats:true},
-  boost:2, night:true, zoom:1, hwZoom:null, camOn:false, camInfo:'', sensor:'none',
+  boost:2, night:true, follow:true, hdg:null, zoom:1, hwZoom:null, camOn:false, camInfo:'', sensor:'none',
   sunEl:0, sunHat:[1,0,0], dataAge:null, absolute:false, align:null
 };
 const saved=store.get('ovh:settings');
-if(saved){Object.assign(S,{lat:saved.lat??S.lat,lon:saved.lon??S.lon,locSource:saved.locSource||'saved',nudge:saved.nudge||0,fov:saved.fov||66,red:!!saved.red,group:saved.group||'visual',boost:saved.boost||2,night:saved.night!==false});if(saved.layers)Object.assign(S.layers,saved.layers)}
-function saveSettings(){store.set('ovh:settings',{lat:S.lat,lon:S.lon,locSource:S.locSource,nudge:S.nudge,fov:S.fov,red:S.red,group:S.group,boost:S.boost,night:S.night,layers:S.layers})}
+if(saved){Object.assign(S,{lat:saved.lat??S.lat,lon:saved.lon??S.lon,locSource:saved.locSource||'saved',nudge:saved.nudge||0,fov:saved.fov||66,red:!!saved.red,group:saved.group||'visual',boost:saved.boost||2,night:saved.night!==false,follow:saved.follow!==false});if(saved.layers)Object.assign(S.layers,saved.layers)}
+function saveSettings(){store.set('ovh:settings',{lat:S.lat,lon:S.lon,locSource:S.locSource,nudge:S.nudge,fov:S.fov,red:S.red,group:S.group,boost:S.boost,night:S.night,follow:S.follow,layers:S.layers})}
 function toast(msg,ms=4000){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,ms)}
 function fmt(n,d=1){return (n<0?'−':'')+Math.abs(n).toFixed(d)}
 const DIRS=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
@@ -913,6 +914,10 @@ function makeProj(){
   };
 }
 function pointing(){const R=S.R,e=-R[2],n=-R[5],u=-R[8];return{az:(Math.atan2(e,n)*R2D+360)%360,el:Math.asin(Math.max(-1,Math.min(1,u)))*R2D}}
+function facing(){ // azimuth the user faces: top edge when flat, camera when upright
+  const R=S.R;if(!R)return null;const fe=R[1]-R[2],fn=R[4]-R[5];
+  if(Math.hypot(fe,fn)<0.15)return null;return (Math.atan2(fe,fn)*R2D+360)%360;
+}
 const on=(p,m=30)=>p.front&&p.x>-m&&p.x<W+m&&p.y>-m&&p.y<H+m;
 let hits=[];
 function satLabel(l){if(S.group==='starlink')return false;if(S.group!=='visual')return true;return l.lit}
@@ -1010,12 +1015,15 @@ function diag(){return (S.camOn?'Camera '+S.camInfo:'Camera off')+(S.zoom>1.01?'
 function drawSky(){
   const c=colors();cx.clearRect(0,0,W,H);cx.fillStyle=c.ground;cx.fillRect(0,0,W,H);
   const top=118,bot=(!$('info').hidden?250:140),cxp=W/2,cyp=top+(H-top-bot)/2,r=Math.max(60,Math.min(W/2-28,(H-top-bot)/2-18));
-  const PP=(az,el)=>{const rr=r*(90-el)/90;return{x:cxp-rr*Math.sin(az*D2R),y:cyp-rr*Math.cos(az*D2R)}};
+  let h=0;
+  if(S.follow){const f=facing();if(f!=null){S.hdg=S.hdg==null?f:(S.hdg+wrap180(f-S.hdg)*0.25+360)%360}h=S.hdg||0}else S.hdg=null;
+  const PP=(az,el)=>{const rr=r*(90-el)/90,a=(az-h)*D2R;return{x:cxp+rr*Math.sin(a),y:cyp-rr*Math.cos(a)}};
   cx.fillStyle='#0f1424';cx.beginPath();cx.arc(cxp,cyp,r,0,7);cx.fill();
   cx.strokeStyle=c.line;cx.lineWidth=1;
   for(const e of [0,30,60]){cx.beginPath();cx.arc(cxp,cyp,r*(90-e)/90,0,7);cx.stroke()}
   cx.font='600 15px '+c.fd;cx.textAlign='center';cx.textBaseline='middle';
-  for(const [lab,a] of [['N',0],['E',90],['S',180],['W',270]]){const s=Math.sin(a*D2R),k=Math.cos(a*D2R);cx.fillStyle=lab==='N'?c.pick:c.muted;cx.fillText(lab,cxp-(r+14)*s,cyp-(r+14)*k)}
+  for(const [lab,a] of [['N',0],['NE',45],['E',90],['SE',135],['S',180],['SW',225],['W',270],['NW',315]]){const q=(a-h)*D2R,big=lab.length===1;cx.font=(big?'600 15px ':'500 11px ')+c.fd;cx.fillStyle=lab==='N'?c.pick:big?c.ink:c.muted;cx.fillText(lab,cxp+(r+14)*Math.sin(q),cyp-(r+14)*Math.cos(q))}
+  if(S.follow&&S.hdg!=null){cx.fillStyle=c.sunlit;cx.beginPath();cx.moveTo(cxp,cyp-r-30);cx.lineTo(cxp-7,cyp-r-40);cx.lineTo(cxp+7,cyp-r-40);cx.closePath();cx.fill()}
   cx.textAlign='start';cx.textBaseline='alphabetic';
   hits=[];
   if(S.layers.cons){
@@ -1035,7 +1043,8 @@ function drawSky(){
     for(const l of sorted){const p=PP(l.az,l.el);drawSatAt(p.x,p.y,l,S.group==='starlink'?false:S.group==='visual'?(l.lit&&l.el>20):true)}
   }
   cx.font='400 11px '+c.fm;cx.fillStyle=c.muted;cx.textAlign='center';
-  cx.fillText('Hold overhead, top toward north. East is on the left.',W/2,Math.min(H-bot+8,cyp+r+36));cx.textAlign='start';
+  const cap=!S.follow?'North is up. Hold the phone flat, top toward north.':S.hdg==null?'Waiting for compass… tap Follow compass if this stays.':'Facing '+Math.round(S.hdg)+'° '+dir(S.hdg)+' (top of the map). Turns with you.';
+  cx.fillText(cap,W/2,Math.min(H-bot+8,cyp+r+36));cx.textAlign='start';
   $('aim').hidden=true;
 }
 let lastSky=0;
@@ -1096,6 +1105,8 @@ $('alignLock').addEventListener('click',()=>{
 });
 $('alignCancel').addEventListener('click',()=>{S.align=null;$('alignBar').hidden=true});
 $('findBtn').addEventListener('click',()=>openPicker('find'));
+function syncFollow(){$('followBtn').setAttribute('aria-pressed',S.follow);$('followBtn').textContent=S.follow?'Following compass':'Follow compass';$('followBtn').hidden=S.mode!=='sky'}
+$('followBtn').addEventListener('click',async()=>{S.follow=!S.follow;saveSettings();syncFollow();if(S.follow)await startSensors()});
 $('alignBtn').addEventListener('click',()=>openPicker('align'));
 $('pickClose').addEventListener('click',()=>$('picker').hidden=true);
 $('picker').addEventListener('click',e=>{if(e.target.id==='picker')$('picker').hidden=true});
@@ -1155,6 +1166,8 @@ async function setMode(m){
   $('alignBtn').hidden=$('boostBtn').hidden=m!=='ar';
   $('ctrl').hidden=m==='passes';
   $('zoomPill').hidden=m!=='ar';
+  syncFollow();
+  if(m==='sky'&&S.follow)startSensors();
   if(m!=='ar'){stopCamera();$('camErr').hidden=true;S.align=null;$('alignBar').hidden=true}
   if(m==='passes')computePasses();
   if(m==='ar'){await startSensors();await startCamera()}
@@ -1210,6 +1223,7 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 resize();fillSettings();showWhere();
 document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed',c.dataset.g===S.group));
 $('alignBtn').hidden=$('boostBtn').hidden=true;
+syncFollow();if(S.follow)startSensors();
 computeSky();
 gps(true);
 loadGroup(S.group);
