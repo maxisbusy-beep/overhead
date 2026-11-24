@@ -10,6 +10,9 @@
 <title>Overhead</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <style>
 /* Layout: one-screen instrument. Full-bleed sky canvas, thin HUD on top, controls + tabs at bottom. Dark only, by design (used at night). */
 :root{
@@ -40,6 +43,9 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--pick);outline-o
 .hud>*{pointer-events:auto}
 .brand{font:700 22px/1 var(--f-display);letter-spacing:.06em;text-transform:uppercase}
 .brand small{display:block;white-space:nowrap;font:400 11px/1.5 var(--f-data);letter-spacing:0;text-transform:none;color:var(--muted);margin-top:4px}
+#orbitAge:empty{display:none}
+#orbitAge.stale{color:var(--sunlit)}
+#orbitAge.old{color:var(--warn)}
 .sky{font:500 11px/1.5 var(--f-data);color:var(--muted);text-align:right;white-space:nowrap}
 .sky b{font-weight:500;color:var(--ink)}
 .iconbtn{width:38px;height:38px;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;background:rgba(20,26,41,.7);flex:none}
@@ -131,7 +137,7 @@ input[type=range]{flex:1;min-width:140px;accent-color:var(--pick)}
 </div>
 
 <div class="hud">
-  <div class="brand">Overhead<small id="where">Locating…</small></div>
+  <div class="brand">Overhead<small id="where">Locating…</small><small id="orbitAge"></small></div>
   <div class="hudr">
     <div class="sky" id="skystate">—</div>
     <button class="iconbtn" id="openSettings" aria-label="Settings">
@@ -1230,6 +1236,46 @@ loadGroup(S.group);
 setInterval(compute,500);
 setInterval(computeTrack,30000);
 requestAnimationFrame(frame);
+</script>
+
+<!-- Packaging only: offline support and the orbit-data age readout.
+     Nothing here touches the astronomy, the rendering or the app's own state. -->
+<script>
+(function(){
+  "use strict";
+
+  /* ---- age of the last CelesTrak download, shown in the HUD ---- */
+  function paintOrbitAge(){
+    var el = document.getElementById("orbitAge");
+    if (!el || typeof S === "undefined") return;
+    var off = (navigator.onLine === false) ? " · offline" : "";
+    if (!S.dataAge){ el.textContent = "Orbits not loaded" + off; el.className = off ? "stale" : ""; el.title = ""; return; }
+    var hours = (Date.now() - S.dataAge) / 3600000;
+    el.textContent = "Orbits " + ago(S.dataAge).replace(" ago", " old") + off;
+    el.className = hours > 72 ? "old" : (hours > 24 || off) ? "stale" : "";
+    el.title = "Orbit data downloaded " + new Date(S.dataAge).toLocaleString();
+  }
+
+  /* Wrap the app's own note updater rather than editing it. */
+  if (typeof updateDataNote === "function"){
+    var inner = updateDataNote;
+    window.updateDataNote = function(){ var r = inner.apply(this, arguments); paintOrbitAge(); return r; };
+  }
+  addEventListener("online", paintOrbitAge);
+  addEventListener("offline", paintOrbitAge);
+  setInterval(paintOrbitAge, 60000);
+  paintOrbitAge();
+
+  /* ---- service worker: lets the app open with no network ---- */
+  /* isSecureContext covers https, http://localhost and Capacitor's own scheme. */
+  if ("serviceWorker" in navigator && window.isSecureContext){
+    addEventListener("load", function(){
+      navigator.serviceWorker.register("sw.js").catch(function(e){
+        console.warn("[overhead] service worker not registered:", e);
+      });
+    });
+  }
+})();
 </script>
 </body>
 </html>
