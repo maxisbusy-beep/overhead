@@ -1344,5 +1344,292 @@ requestAnimationFrame(frame);
   catch (e) { console.warn("[overhead] could not install geolocation shim:", e); }
 })();
 </script>
+
+<!-- Self-test panel. Additive: it reads state and exercises the device APIs,
+     and never touches the app's own variables or rendering. Opened from
+     Settings > Diagnostics. -->
+<script>
+(function(){
+  "use strict";
+  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+  var cap = window.Capacitor;
+  var NATIVE = !!(cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform());
+  function grant(what){
+    return NATIVE
+      ? "Permission refused. Android Settings > Apps > Overhead > Permissions > " + what + "."
+      : "Permission refused. Allow " + what.toLowerCase() + " for this site in the browser’s address-bar menu.";
+  }
+
+  var css = document.createElement("style");
+  css.textContent =
+    "#stList{display:flex;flex-direction:column;gap:10px}" +
+    "#stList .t{display:flex;gap:10px;align-items:flex-start}" +
+    "#stList .k{flex:0 0 1.1em;font:600 14px var(--f-data)}" +
+    "#stList .b{flex:1 1 auto;min-width:0}" +
+    "#stList .n{font:600 12px var(--f-display);letter-spacing:.1em;text-transform:uppercase}" +
+    "#stList .d{font:400 12px/1.5 var(--f-data);color:var(--muted);word-break:break-word}" +
+    "#stList .pass .k{color:var(--pick)}" +
+    "#stList .fail .k{color:var(--warn)}" +
+    "#stList .run .k,#stList .skip .k{color:var(--muted)}";
+  document.head.appendChild(css);
+
+  /* Button in Settings, in its own row, after the existing rows. */
+  var sheetIn = document.querySelector("#sheet .in");
+  if (!sheetIn) return;
+  var row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = '<span>Diagnostics</span>' +
+    '<div class="h"><button class="btn" id="stOpen">Run self-test</button></div>' +
+    '<p class="note">Checks the camera, compass, GPS and the satellite download, ' +
+    'and tells you which of them this phone is actually giving the app.</p>';
+  sheetIn.appendChild(row);
+
+  var sheet = document.createElement("div");
+  sheet.className = "sheet";
+  sheet.id = "stSheet";
+  sheet.hidden = true;
+  sheet.innerHTML =
+    '<div class="in" role="dialog" aria-label="Self-test">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center">' +
+        '<h3>Self-test</h3><button class="btn" id="stClose">Done</button></div>' +
+      '<div id="stList"></div>' +
+      '<div class="h"><button class="btn primary" id="stRun">Run again</button>' +
+      '<button class="btn" id="stCopy">Copy results</button></div>' +
+      '<p class="note" id="stNote"></p>' +
+    '</div>';
+  document.body.appendChild(sheet);
+
+  var list = document.getElementById("stList");
+  var MARK = { pass:"\u2713", fail:"\u2715", run:"\u00b7", skip:"\u2013" };
+  var rows = {};
+
+  function set(id, name, state, detail){
+    var r = rows[id];
+    if (!r){
+      r = rows[id] = document.createElement("div");
+      r.className = "t";
+      r.innerHTML = '<div class="k"></div><div class="b"><div class="n"></div><div class="d"></div></div>';
+      list.appendChild(r);
+    }
+    r.className = "t " + state;
+    r.querySelector(".k").textContent = MARK[state] || "?";
+    r.querySelector(".n").textContent = name;
+    r.querySelector(".d").innerHTML = esc(detail == null ? "" : detail);
+  }
+
+  function plain(){
+    var out = [];
+    for (var i = 0; i < list.children.length; i++){
+      var c = list.children[i];
+      out.push(c.querySelector(".k").textContent + " " +
+               c.querySelector(".n").textContent + ": " +
+               c.querySelector(".d").textContent);
+    }
+    return "Overhead self-test\n" + new Date().toISOString() + "\n" + out.join("\n");
+  }
+
+  /* ---- the checks ------------------------------------------------------ */
+
+  function checkPlatform(){
+    var bits = [NATIVE ? "Android app (Capacitor)" : "Web page",
+                "secure context: " + (window.isSecureContext ? "yes" : "no"),
+                "online: " + (navigator.onLine === false ? "no" : "yes")];
+    set("plat", "Where it is running", "pass", bits.join(" \u00b7 "));
+    set("wake", "Keep screen awake", navigator.wakeLock ? "pass" : "fail",
+        navigator.wakeLock ? "Wake Lock API available"
+                           : "Not available; the screen may dim in camera mode");
+    var g = navigator.geolocation;
+    var shimmed = !!(g && Object.prototype.hasOwnProperty.call(navigator, "geolocation"));
+    set("gloc", "Location source", "pass",
+        shimmed ? "Capacitor Geolocation plugin" : "Browser geolocation");
+  }
+
+  function checkCamera(){
+    set("cam", "Camera feed", "run", "asking for permission\u2026");
+    var md = navigator.mediaDevices;
+    if (!md || !md.getUserMedia){
+      set("cam", "Camera feed", "fail", "This browser exposes no camera API");
+      return Promise.resolve();
+    }
+    return md.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false })
+      .then(function(stream){
+        var tr = stream.getVideoTracks()[0];
+        var s = (tr && tr.getSettings) ? tr.getSettings() : {};
+        var bits = [];
+        if (s.width && s.height) bits.push(s.width + "\u00d7" + s.height);
+        if (s.frameRate) bits.push(Math.round(s.frameRate) + " fps");
+        if (s.facingMode) bits.push(s.facingMode === "environment" ? "rear camera" : s.facingMode);
+        if (tr && tr.label) bits.push(tr.label);
+        stream.getTracks().forEach(function(t){ t.stop(); });
+        set("cam", "Camera feed", "pass", bits.join(" \u00b7 ") || "started");
+      })
+      .catch(function(e){
+        var n = (e && e.name) || "";
+        var why = n === "NotAllowedError" ? grant("Camera")
+                : n === "NotFoundError"  ? "No camera found on this device."
+                : n === "NotReadableError" ? "The camera is busy \u2014 close other camera apps."
+                : ((e && e.message) || n || "unknown error");
+        set("cam", "Camera feed", "fail", why);
+      });
+  }
+
+  function checkCompass(){
+    set("comp", "Compass", "run", "turn the phone slowly for 3 seconds\u2026");
+    return new Promise(function(done){
+      var n = 0, last = null, absolute = false;
+      function onEv(e){
+        n++; last = e;
+        if (e.absolute) absolute = true;
+        if (typeof e.webkitCompassHeading === "number") absolute = true;
+      }
+      var hasAbs = "ondeviceorientationabsolute" in window;
+      var kind = hasAbs ? "deviceorientationabsolute" : "deviceorientation";
+      if (hasAbs) addEventListener("deviceorientationabsolute", onEv);
+      addEventListener("deviceorientation", onEv);
+
+      function finish(){
+        if (hasAbs) removeEventListener("deviceorientationabsolute", onEv);
+        removeEventListener("deviceorientation", onEv);
+        if (!n){
+          set("comp", "Compass", "fail",
+              "No orientation events arrived. The sky will not follow where you point; " +
+              "use Align in Camera mode instead.");
+        } else if (!absolute){
+          set("comp", "Compass", "fail",
+              n + " events, but none carried a true-north heading (relative only). " +
+              "Use Align in Camera mode to correct it.");
+        } else {
+          var a = last && (typeof last.webkitCompassHeading === "number"
+                  ? last.webkitCompassHeading : last.alpha);
+          if (typeof a !== "number"){
+            set("comp", "Compass", "fail",
+                n + " events arrived, but with no heading in them. This phone is not " +
+                "reporting a compass direction; use Align in Camera mode instead.");
+          } else {
+            set("comp", "Compass", "pass",
+                kind + " \u00b7 " + n + " events \u00b7 heading " + Math.round(a) + "\u00b0");
+          }
+        }
+        done();
+      }
+
+      function go(){ setTimeout(finish, 3000); }
+      var DOE = window.DeviceOrientationEvent;
+      if (DOE && typeof DOE.requestPermission === "function"){
+        DOE.requestPermission().then(go, go);
+      } else go();
+    });
+  }
+
+  function checkGps(){
+    set("gps", "GPS", "run", "asking for a fix\u2026");
+    return new Promise(function(done){
+      if (!navigator.geolocation){
+        set("gps", "GPS", "fail", "No geolocation API available");
+        return done();
+      }
+      var t0 = Date.now();
+      navigator.geolocation.getCurrentPosition(function(p){
+        var c = p.coords || {};
+        set("gps", "GPS", "pass",
+            "fix in " + ((Date.now() - t0) / 1000).toFixed(1) + " s \u00b7 " +
+            "accuracy " + (c.accuracy == null ? "\u2014" : Math.round(c.accuracy) + " m") +
+            " \u00b7 near " + (c.latitude == null ? "\u2014" :
+              c.latitude.toFixed(1) + ", " + c.longitude.toFixed(1)) +
+            " (rounded, about 10 km)");
+        done();
+      }, function(e){
+        var m = (e && e.message) || "";
+        var code = e && e.code;
+        var why = code === 1 ? grant("Location")
+                : code === 3 ? "Timed out. Try outdoors, away from windows."
+                : (m || "Position unavailable");
+        set("gps", "GPS", "fail", why);
+        done();
+      }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+    });
+  }
+
+  function checkOrbits(){
+    var n = (typeof S !== "undefined" && S.sats) ? S.sats.length : 0;
+    var age = (typeof S !== "undefined") ? S.dataAge : 0;
+    set("orb", "Orbits in memory", n ? "pass" : "fail",
+        n ? n + " satellites loaded, downloaded " +
+            (age ? new Date(age).toLocaleString() : "\u2014")
+          : "No satellites loaded yet");
+
+    set("net", "Satellite download", "run", "fetching a small test file\u2026");
+    var url = "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle";
+    var t0 = Date.now();
+    return fetch(url, { cache: "no-store" })
+      .then(function(r){
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.text();
+      })
+      .then(function(txt){
+        var lines = txt.split("\n").filter(function(l){ return l.trim(); }).length;
+        set("net", "Satellite download", "pass",
+            "CelesTrak answered in " + ((Date.now() - t0) / 1000).toFixed(1) + " s \u00b7 " +
+            Math.round(txt.length / 1024) + " kB \u00b7 " + Math.floor(lines / 3) + " satellites");
+      })
+      .catch(function(e){
+        set("net", "Satellite download", "fail",
+            ((e && e.message) || "failed") +
+            (navigator.onLine === false ? " (you are offline, so this is expected)"
+                                        : " \u2014 the app falls back to its mirrors and to the last download"));
+      });
+  }
+
+  var running = false;
+  function runAll(){
+    if (running) return;
+    running = true;
+    document.getElementById("stRun").disabled = true;
+    document.getElementById("stNote").textContent = "Running\u2026";
+    list.textContent = "";
+    rows = {};
+    checkPlatform();
+    /* Sequential, so the permission prompts do not stack up. */
+    Promise.resolve()
+      .then(checkCamera)
+      .then(checkCompass)
+      .then(checkGps)
+      .then(checkOrbits)
+      .catch(function(e){ set("oops", "Self-test", "fail", (e && e.message) || String(e)); })
+      .then(function(){
+        running = false;
+        document.getElementById("stRun").disabled = false;
+        document.getElementById("stNote").textContent =
+          "Finished " + new Date().toLocaleTimeString() +
+          ". Copy results sends nothing anywhere \u2014 it only puts the text on your clipboard.";
+      });
+  }
+
+  document.getElementById("stOpen").addEventListener("click", function(){
+    var s = document.getElementById("sheet");
+    if (s) s.hidden = true;
+    sheet.hidden = false;
+    runAll();
+  });
+  document.getElementById("stClose").addEventListener("click", function(){ sheet.hidden = true; });
+  document.getElementById("stRun").addEventListener("click", runAll);
+  document.getElementById("stCopy").addEventListener("click", function(){
+    var txt = plain();
+    var note = document.getElementById("stNote");
+    function fallback(){
+      var ta = document.createElement("textarea");
+      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); note.textContent = "Copied."; }
+      catch (e) { note.textContent = "Could not copy; select the text above by hand."; }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(txt).then(function(){ note.textContent = "Copied."; }, fallback);
+    } else fallback();
+  });
+  sheet.addEventListener("click", function(e){ if (e.target === sheet) sheet.hidden = true; });
+})();
+</script>
 </body>
 </html>
