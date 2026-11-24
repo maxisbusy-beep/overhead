@@ -40,6 +40,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          # Cache the Gradle dependency downloads. Maven Central answers a
+          # cold runner with HTTP 429 often enough to fail a build; a warm
+          # cache mostly sidesteps that, and makes the build quicker.
+          cache: gradle
 
       - name: Set up the Android SDK
         uses: android-actions/setup-android@v3
