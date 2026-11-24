@@ -1268,13 +1268,80 @@ requestAnimationFrame(frame);
 
   /* ---- service worker: lets the app open with no network ---- */
   /* isSecureContext covers https, http://localhost and Capacitor's own scheme. */
-  if ("serviceWorker" in navigator && window.isSecureContext){
+  var onNative = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === "function"
+                    && window.Capacitor.isNativePlatform());
+  if ("serviceWorker" in navigator && window.isSecureContext && !onNative){
     addEventListener("load", function(){
       navigator.serviceWorker.register("sw.js").catch(function(e){
         console.warn("[overhead] service worker not registered:", e);
       });
     });
   }
+})();
+</script>
+
+<!-- Android (Capacitor) only. On the web Capacitor is undefined, this block
+     returns immediately, and nothing below runs. -->
+<script>
+(function(){
+  "use strict";
+  var cap = window.Capacitor;
+  if (!(cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform())) return;
+  document.documentElement.classList.add("native");
+
+  /* Location through the Capacitor plugin. The WebView's own geolocation is
+     unreliable on Android; the plugin uses the system fused provider and asks
+     for the runtime permission itself. The app's gps() is untouched -- it
+     still just calls navigator.geolocation.getCurrentPosition. */
+  var G = cap.Plugins && cap.Plugins.Geolocation;
+  if (!G) return;
+
+  var watches = Object.create(null), nextId = 1;
+  function opt(o){
+    o = o || {};
+    return { enableHighAccuracy: o.enableHighAccuracy !== false,
+             timeout: o.timeout || 15000,
+             maximumAge: o.maximumAge || 0 };
+  }
+  function fail(err, e){
+    /* Shaped like a GeolocationPositionError: gps() reads err.message. */
+    if (err) err({ code: 2, PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3,
+                   message: (e && e.message) || String(e) });
+  }
+
+  var shim = {
+    getCurrentPosition: function(ok, err, o){
+      Promise.resolve(G.requestPermissions ? G.requestPermissions() : null)
+        .then(function(){ return G.getCurrentPosition(opt(o)); })
+        .then(function(p){ ok(p); })
+        .catch(function(e){ fail(err, e); });
+    },
+    watchPosition: function(ok, err, o){
+      var id = nextId++;
+      watches[id] = null;
+      Promise.resolve(G.requestPermissions ? G.requestPermissions() : null)
+        .then(function(){
+          return G.watchPosition(opt(o), function(p, e){
+            if (e) fail(err, e); else if (p) ok(p);
+          });
+        })
+        .then(function(wid){
+          if (id in watches) watches[id] = wid;
+          else G.clearWatch({ id: wid });   /* cleared before it started */
+        })
+        .catch(function(e){ fail(err, e); });
+      return id;
+    },
+    clearWatch: function(id){
+      var wid = watches[id];
+      delete watches[id];
+      if (wid) G.clearWatch({ id: wid });
+    }
+  };
+
+  /* navigator.geolocation is a prototype getter, so define an own property. */
+  try { Object.defineProperty(navigator, "geolocation", { value: shim, configurable: true }); }
+  catch (e) { console.warn("[overhead] could not install geolocation shim:", e); }
 })();
 </script>
 </body>
